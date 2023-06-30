@@ -84,20 +84,7 @@ static int tegra186_emc_debug_available_rates_show(struct seq_file *s,
 
 	return 0;
 }
-
-static int tegra186_emc_debug_available_rates_open(struct inode *inode,
-						   struct file *file)
-{
-	return single_open(file, tegra186_emc_debug_available_rates_show,
-			   inode->i_private);
-}
-
-static const struct file_operations tegra186_emc_debug_available_rates_fops = {
-	.open = tegra186_emc_debug_available_rates_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(tegra186_emc_debug_available_rates);
 
 static int tegra186_emc_debug_min_rate_get(void *data, u64 *rate)
 {
@@ -273,6 +260,9 @@ static const struct of_device_id tegra186_emc_of_match[] = {
 #if defined(CONFIG_ARCH_TEGRA_194_SOC)
 	{ .compatible = "nvidia,tegra194-emc" },
 #endif
+#if defined(CONFIG_ARCH_TEGRA_234_SOC)
+	{ .compatible = "nvidia,tegra234-emc" },
+#endif
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, tegra186_emc_of_match);
@@ -290,4 +280,3 @@ module_platform_driver(tegra186_emc_driver);
 
 MODULE_AUTHOR("Thierry Reding <treding@nvidia.com>");
 MODULE_DESCRIPTION("NVIDIA Tegra186 External Memory Controller driver");
-MODULE_LICENSE("GPL v2");

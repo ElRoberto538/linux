@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <string.h>
 #include <stdarg.h>
@@ -13,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <sys/socket.h>
@@ -85,6 +87,10 @@ struct so_state {
 	uint64_t tcpi_rcv_delta;
 };
 
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+
 static void die_perror(const char *msg)
 {
 	perror(msg);
@@ -134,7 +140,7 @@ static void xgetaddrinfo(const char *node, const char *service,
 static int sock_listen_mptcp(const char * const listenaddr,
 			     const char * const port)
 {
-	int sock;
+	int sock = -1;
 	struct addrinfo hints = {
 		.ai_protocol = IPPROTO_TCP,
 		.ai_socktype = SOCK_STREAM,
@@ -347,13 +353,14 @@ static void do_getsockopt_tcp_info(struct so_state *s, int fd, size_t r, size_t 
 			xerror("getsockopt MPTCP_TCPINFO (tries %d, %m)");
 
 		assert(olen <= sizeof(ti));
-		assert(ti.d.size_user == ti.d.size_kernel);
-		assert(ti.d.size_user == sizeof(struct tcp_info));
+		assert(ti.d.size_kernel > 0);
+		assert(ti.d.size_user ==
+		       MIN(ti.d.size_kernel, sizeof(struct tcp_info)));
 		assert(ti.d.num_subflows == 1);
 
 		assert(olen > (socklen_t)sizeof(struct mptcp_subflow_data));
 		olen -= sizeof(struct mptcp_subflow_data);
-		assert(olen == sizeof(struct tcp_info));
+		assert(olen == ti.d.size_user);
 
 		if (ti.ti[0].tcpi_bytes_sent == w &&
 		    ti.ti[0].tcpi_bytes_received == r)
@@ -399,13 +406,14 @@ static void do_getsockopt_subflow_addrs(int fd)
 		die_perror("getsockopt MPTCP_SUBFLOW_ADDRS");
 
 	assert(olen <= sizeof(addrs));
-	assert(addrs.d.size_user == addrs.d.size_kernel);
-	assert(addrs.d.size_user == sizeof(struct mptcp_subflow_addrs));
+	assert(addrs.d.size_kernel > 0);
+	assert(addrs.d.size_user ==
+	       MIN(addrs.d.size_kernel, sizeof(struct mptcp_subflow_addrs)));
 	assert(addrs.d.num_subflows == 1);
 
 	assert(olen > (socklen_t)sizeof(struct mptcp_subflow_data));
 	olen -= sizeof(struct mptcp_subflow_data);
-	assert(olen == sizeof(struct mptcp_subflow_addrs));
+	assert(olen == addrs.d.size_user);
 
 	llen = sizeof(local);
 	ret = getsockname(fd, (struct sockaddr *)&local, &llen);
@@ -594,6 +602,44 @@ static int server(int pipefd)
 	return 0;
 }
 
+static void test_ip_tos_sockopt(int fd)
+{
+	uint8_t tos_in, tos_out;
+	socklen_t s;
+	int r;
+
+	tos_in = rand() & 0xfc;
+	r = setsockopt(fd, SOL_IP, IP_TOS, &tos_in, sizeof(tos_out));
+	if (r != 0)
+		die_perror("setsockopt IP_TOS");
+
+	tos_out = 0;
+	s = sizeof(tos_out);
+	r = getsockopt(fd, SOL_IP, IP_TOS, &tos_out, &s);
+	if (r != 0)
+		die_perror("getsockopt IP_TOS");
+
+	if (tos_in != tos_out)
+		xerror("tos %x != %x socklen_t %d\n", tos_in, tos_out, s);
+
+	if (s != 1)
+		xerror("tos should be 1 byte");
+
+	s = 0;
+	r = getsockopt(fd, SOL_IP, IP_TOS, &tos_out, &s);
+	if (r != 0)
+		die_perror("getsockopt IP_TOS 0");
+	if (s != 0)
+		xerror("expect socklen_t == 0");
+
+	s = -1;
+	r = getsockopt(fd, SOL_IP, IP_TOS, &tos_out, &s);
+	if (r != -1 && errno != EINVAL)
+		die_perror("getsockopt IP_TOS did not indicate -EINVAL");
+	if (s != -1)
+		xerror("expect socklen_t == -1");
+}
+
 static int client(int pipefd)
 {
 	int fd = -1;
@@ -610,6 +656,8 @@ static int client(int pipefd)
 	default:
 		xerror("Unknown pf %d\n", pf);
 	}
+
+	test_ip_tos_sockopt(fd);
 
 	connect_one_server(fd, pipefd);
 
@@ -642,6 +690,25 @@ static int rcheck(int wstatus, const char *what)
 	return 111;
 }
 
+static void init_rng(void)
+{
+	int fd = open("/dev/urandom", O_RDONLY);
+
+	if (fd >= 0) {
+		unsigned int foo;
+		ssize_t ret;
+
+		/* can't fail */
+		ret = read(fd, &foo, sizeof(foo));
+		assert(ret == sizeof(foo));
+
+		close(fd);
+		srand(foo);
+	} else {
+		srand(time(NULL));
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	int e1, e2, wstatus;
@@ -649,6 +716,8 @@ int main(int argc, char *argv[])
 	int pipefds[2];
 
 	parse_opts(argc, argv);
+
+	init_rng();
 
 	e1 = pipe(pipefds);
 	if (e1 < 0)

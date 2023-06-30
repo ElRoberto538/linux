@@ -3,33 +3,38 @@
  * Copyright(c) 2020 Intel Corporation.
  */
 
+#include "i915_drv.h"
+
 #include "intel_pxp.h"
 #include "intel_pxp_irq.h"
 #include "intel_pxp_pm.h"
 #include "intel_pxp_session.h"
+#include "intel_pxp_types.h"
 
-void intel_pxp_suspend(struct intel_pxp *pxp, bool runtime)
+void intel_pxp_suspend_prepare(struct intel_pxp *pxp)
 {
 	if (!intel_pxp_is_enabled(pxp))
 		return;
 
-	pxp->arb_is_valid = false;
+	intel_pxp_end(pxp);
 
-	/*
-	 * Contexts using protected objects keep a runtime PM reference, so we
-	 * can only runtime suspend when all of them have been either closed
-	 * or banned. Therefore, there is no need to invalidate in that
-	 * scenario.
-	 */
-	if (!runtime)
-		intel_pxp_invalidate(pxp);
-
-	intel_pxp_fini_hw(pxp);
-
-	pxp->hw_state_invalidated = false;
+	intel_pxp_invalidate(pxp);
 }
 
-void intel_pxp_resume(struct intel_pxp *pxp)
+void intel_pxp_suspend(struct intel_pxp *pxp)
+{
+	intel_wakeref_t wakeref;
+
+	if (!intel_pxp_is_enabled(pxp))
+		return;
+
+	with_intel_runtime_pm(&pxp->ctrl_gt->i915->runtime_pm, wakeref) {
+		intel_pxp_fini_hw(pxp);
+		pxp->hw_state_invalidated = false;
+	}
+}
+
+void intel_pxp_resume_complete(struct intel_pxp *pxp)
 {
 	if (!intel_pxp_is_enabled(pxp))
 		return;
@@ -43,4 +48,16 @@ void intel_pxp_resume(struct intel_pxp *pxp)
 		return;
 
 	intel_pxp_init_hw(pxp);
+}
+
+void intel_pxp_runtime_suspend(struct intel_pxp *pxp)
+{
+	if (!intel_pxp_is_enabled(pxp))
+		return;
+
+	pxp->arb_is_valid = false;
+
+	intel_pxp_fini_hw(pxp);
+
+	pxp->hw_state_invalidated = false;
 }
